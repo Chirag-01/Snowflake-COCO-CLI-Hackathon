@@ -1,0 +1,60 @@
+{
+  "domain_id": "healthcare",
+  "display_name": "Healthcare Risk Intelligence",
+  "icon": "🏥",
+  "page_title": "Healthcare Risk Command Center",
+  "entity": {
+    "project": "Program",
+    "projects": "Programs",
+    "vendor": "Supplier",
+    "vendors": "Suppliers",
+    "contract": "Service Agreement",
+    "item": "Ward"
+  },
+  "ui": {
+    "portfolio_header": "🏥 Clinical Program Portfolio",
+    "vendor_section": "🏢 Supplier Risk Ranking",
+    "vendor_chart_title": "Top 10 Supplier Risk Scores (higher = more risk)",
+    "financial_tab_header": "💊 Financial Risk Calculator",
+    "financial_tab_caption": "Quantify budget overruns, regulatory penalties, compliance exposure, and recovery potential",
+    "ld_section_header": "⚖️ Regulatory Penalty Calculator",
+    "ld_label": "Regulatory Penalty",
+    "ld_metric_help": "Fine exposure from regulatory non-compliance (penalty rate × days non-compliant)",
+    "ld_description": "Regulatory Penalties are fines imposed by healthcare authorities (CMS, Joint Commission, state regulators) for each day a non-compliance issue remains unresolved. The program buffer below shows how many days of remediation time remain before a penalty trigger.",
+    "schedule_slack_label": "Program Buffer (Days)",
+    "open_risks_label": "Open Issues",
+    "app_title": "🏥 Risk Command Center",
+    "app_subtitle": "Healthcare Unstructured Data Intelligence"
+  },
+  "risk_categories": {
+    "DELAY_RISK_COUNT": "Timeline Delays",
+    "CONTRACT_RISK_COUNT": "Regulatory Risks",
+    "BUDGET_RISK_COUNT": "Budget Risks",
+    "VENDOR_RISK_COUNT": "Supplier Risks",
+    "SAFETY_RISK_COUNT": "Patient Safety",
+    "ENVIRONMENTAL_RISK_COUNT": "Infection Control",
+    "QUALITY_RISK_COUNT": "Quality/Audit"
+  },
+  "coco": {
+    "system_prompt": "You are CoCo, an enterprise healthcare risk intelligence assistant for a legitimate hospital and clinical program management system. Your job is to help program managers understand their clinical programs, supplier agreements, regulatory compliance, staffing risks, patient safety, and financial performance. All questions relate to healthcare program management.",
+    "vendor_keywords": ["supplier", "vendor", "provider", "staff", "contractor", "agency"],
+    "vendor_chart_title": "Supplier Risk Scores",
+    "suggestions": [
+      "What are the highest patient safety risks?",
+      "Which programs are over budget?",
+      "Show me regulatory compliance exposure",
+      "Compare supplier performance ranking",
+      "Show breakdown of risks by category",
+      "Chart program timeline progress"
+    ]
+  },
+  "report": {
+    "cover_title": "🏥 Healthcare Risk Command Center",
+    "report_types": [
+      {"id": "EXECUTIVE_SUMMARY", "label": "📊 Executive Summary"},
+      {"id": "RISK_REPORT",        "label": "⚠️ Clinical Risk Report"},
+      {"id": "VENDOR_PERFORMANCE", "label": "🏢 Supplier Performance"}
+    ]
+  },
+  "extract_prompt_hint": "Extract healthcare entities: program names and IDs, clinical departments, supplier/vendor names, budget allocations, regulatory issues, patient safety incidents, staffing levels, compliance requirements, accreditation status, service agreement values"
+}

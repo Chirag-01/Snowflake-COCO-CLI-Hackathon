@@ -1,0 +1,60 @@
+{
+  "domain_id": "construction",
+  "display_name": "Construction Risk Intelligence",
+  "icon": "🏗️",
+  "page_title": "Enterprise Risk Command Center",
+  "entity": {
+    "project": "Project",
+    "projects": "Projects",
+    "vendor": "Contractor",
+    "vendors": "Contractors",
+    "contract": "Contract",
+    "item": "Site"
+  },
+  "ui": {
+    "portfolio_header": "🏗️ Project Portfolio",
+    "vendor_section": "👷 Vendor Risk Ranking",
+    "vendor_chart_title": "Top 10 Vendor Risk Scores (higher = more risk)",
+    "financial_tab_header": "💰 Financial Impact Calculator",
+    "financial_tab_caption": "Quantify risk exposure, delay penalties, cost overruns, and recovery potential",
+    "ld_section_header": "⚖️ Liquidated Damages Calculator",
+    "ld_label": "Liquidated Damages",
+    "ld_metric_help": "Penalty exposure from schedule delays (LD rate × delay days)",
+    "ld_description": "Liquidated Damages (LDs) are the contractual penalty your client charges for every calendar day the project finishes late. The schedule slack (float) below shows how many days of buffer remain. Negative float means the project is already behind.",
+    "schedule_slack_label": "Schedule Slack (Days)",
+    "open_risks_label": "Open Risks",
+    "app_title": "🏗️ Risk Command Center",
+    "app_subtitle": "Enterprise Unstructured Data Intelligence"
+  },
+  "risk_categories": {
+    "DELAY_RISK_COUNT": "Schedule Risks",
+    "CONTRACT_RISK_COUNT": "Contract Risks",
+    "BUDGET_RISK_COUNT": "Budget Risks",
+    "VENDOR_RISK_COUNT": "Vendor Risks",
+    "SAFETY_RISK_COUNT": "Safety Risks",
+    "ENVIRONMENTAL_RISK_COUNT": "Environmental",
+    "QUALITY_RISK_COUNT": "Quality Risks"
+  },
+  "coco": {
+    "system_prompt": "You are CoCo, an enterprise construction-risk intelligence assistant for a legitimate construction project management system. Your job is to help project managers understand their projects, contracts, vendors, risks, schedules, and finances. All questions relate to construction project management.",
+    "vendor_keywords": ["vendor", "supplier", "contractor", "subcontractor"],
+    "vendor_chart_title": "Vendor Risk Scores",
+    "suggestions": [
+      "What is the biggest financial risk right now?",
+      "Which projects are behind schedule?",
+      "Show me risk exposure by project",
+      "Compare vendor performance ranking",
+      "Show breakdown of risks by category",
+      "Chart project completion progress"
+    ]
+  },
+  "report": {
+    "cover_title": "🏗️ Enterprise Risk Command Center",
+    "report_types": [
+      {"id": "EXECUTIVE_SUMMARY", "label": "📊 Executive Summary"},
+      {"id": "RISK_REPORT",        "label": "⚠️ Risk Report"},
+      {"id": "VENDOR_PERFORMANCE", "label": "🏢 Vendor Performance"}
+    ]
+  },
+  "extract_prompt_hint": "Extract construction entities: project names and IDs, contractor/vendor names, contract values, change orders, schedule delays, safety incidents, RFIs, liquidated damages rates, milestone dates"
+}
