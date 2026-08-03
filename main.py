@@ -77,18 +77,19 @@ def _theme_css(dark):
     .stCheckbox label, .stSlider label, .stDateInput label {{
         color: {text} !important;
     }}
-    .stSelectbox [data-baseweb="select"] span,
-    .stMultiSelect [data-baseweb="select"] span,
-    .stTextInput input, .stNumberInput input, .stTextArea textarea {{
-        color: {text} !important;
-        background-color: {input_bg} !important;
-    }}
     .stSelectbox [data-baseweb="select"],
-    .stMultiSelect [data-baseweb="select"],
     .stSelectbox [data-baseweb="select"] div,
-    .stMultiSelect [data-baseweb="select"] div {{
+    .stMultiSelect [data-baseweb="select"],
+    .stMultiSelect [data-baseweb="select"] div,
+    .stTextInput input, .stNumberInput input, .stTextArea textarea,
+    [data-testid="stFileUploadDropzone"],
+    [data-testid="stUploadedFile"] {{
         background-color: {input_bg} !important;
         border-color: {border} !important;
+        color: {text} !important;
+    }}
+    .stSelectbox [data-baseweb="select"] span,
+    .stMultiSelect [data-baseweb="select"] span {{
         color: {text} !important;
     }}
     .stRadio div[role="radiogroup"] label span {{ color: {text} !important; }}
@@ -96,12 +97,31 @@ def _theme_css(dark):
 
     /* ─── File Uploader ─── */
     [data-testid="stFileUploader"] * {{ color: {text} !important; }}
-    [data-testid="stUploadedFile"] * {{ color: {text} !important; }}
+    [data-testid="stFileUploadDropzone"] button {{
+        background-color: {card} !important;
+        color: {text} !important;
+        border-color: {border} !important;
+    }}
 
     /* ─── Buttons text ─── */
-    .stButton button {{ color: {text} !important; background-color: {card} !important; }}
-    .stButton button:hover {{ border-color: {accent} !important; background-color: {hover} !important; }}
-    .stDownloadButton button {{ color: {text} !important; background-color: {card} !important; }}
+    .stButton button, .stDownloadButton button, 
+    [data-testid="stFormSubmitButton"] button, button[data-testid="stFormSubmitButton"],
+    [data-testid="baseButton-secondary"], [data-testid="baseButton-primary"],
+    button[kind="secondary"], button[kind="primary"], 
+    button[kind="secondaryFormSubmit"], button[kind="primaryFormSubmit"] {{ 
+        color: {text} !important; 
+        background-color: {card} !important; 
+        border-color: {border} !important;
+    }}
+    .stButton button:hover, .stDownloadButton button:hover, 
+    [data-testid="stFormSubmitButton"] button:hover, button[data-testid="stFormSubmitButton"]:hover,
+    [data-testid="baseButton-secondary"]:hover, [data-testid="baseButton-primary"]:hover,
+    button[kind="secondary"]:hover, button[kind="primary"]:hover,
+    button[kind="secondaryFormSubmit"]:hover, button[kind="primaryFormSubmit"]:hover {{ 
+        border-color: {accent} !important; 
+        background-color: {hover} !important; 
+        color: {text} !important;
+    }}
 
     /* ─── Expander content ─── */
     .streamlit-expanderHeader {{ font-weight: 600; color: {text} !important; }}
