@@ -81,9 +81,15 @@ def _theme_css(dark):
     .stSelectbox [data-baseweb="select"] div,
     .stMultiSelect [data-baseweb="select"],
     .stMultiSelect [data-baseweb="select"] div,
+    [data-testid="stSelectbox"] > div > div,
+    [data-testid="stSelectbox"] > div > div > div,
     .stTextInput input, .stNumberInput input, .stTextArea textarea,
     [data-testid="stFileUploadDropzone"],
-    [data-testid="stUploadedFile"] {{
+    [data-testid="stFileUploadDropzone"] > div,
+    [data-testid="stFileUploadDropzone"] > div > div,
+    [data-testid="stUploadedFile"],
+    [data-testid="stUploadedFile"] > div,
+    [data-testid="stUploadedFile"] > div > div {{
         background-color: {input_bg} !important;
         border-color: {border} !important;
         color: {text} !important;
