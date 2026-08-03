@@ -84,12 +84,19 @@ def _theme_css(dark):
         background-color: {input_bg} !important;
     }}
     .stSelectbox [data-baseweb="select"],
-    .stMultiSelect [data-baseweb="select"] {{
+    .stMultiSelect [data-baseweb="select"],
+    .stSelectbox [data-baseweb="select"] div,
+    .stMultiSelect [data-baseweb="select"] div {{
         background-color: {input_bg} !important;
         border-color: {border} !important;
+        color: {text} !important;
     }}
     .stRadio div[role="radiogroup"] label span {{ color: {text} !important; }}
     .stCheckbox span {{ color: {text} !important; }}
+
+    /* ─── File Uploader ─── */
+    [data-testid="stFileUploader"] * {{ color: {text} !important; }}
+    [data-testid="stUploadedFile"] * {{ color: {text} !important; }}
 
     /* ─── Buttons text ─── */
     .stButton button {{ color: {text} !important; background-color: {card} !important; }}
