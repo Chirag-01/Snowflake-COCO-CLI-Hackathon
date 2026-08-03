@@ -82,9 +82,9 @@ def _theme_css(dark):
     .stApp .stMultiSelect div,
     .stApp .stMultiSelect span,
     .stApp .stTextInput input, .stApp .stNumberInput input, .stApp .stTextArea textarea,
-    .stApp [data-testid="stFileUploadDropzone"],
-    .stApp [data-testid="stFileUploadDropzone"] div,
-    .stApp [data-testid="stFileUploadDropzone"] section,
+    .stApp [data-testid="stFileUploaderDropzone"],
+    .stApp [data-testid="stFileUploaderDropzone"] div,
+    .stApp [data-testid="stFileUploaderDropzone"] section,
     .stApp [data-testid="stUploadedFile"],
     .stApp [data-testid="stUploadedFile"] div {{
         background-color: {input_bg} !important;
@@ -96,7 +96,7 @@ def _theme_css(dark):
 
     /* ─── File Uploader ─── */
     [data-testid="stFileUploader"] * {{ color: {text} !important; }}
-    [data-testid="stFileUploadDropzone"] button {{
+    [data-testid="stFileUploaderDropzone"] button {{
         background-color: {card} !important;
         color: {text} !important;
         border-color: {border} !important;
