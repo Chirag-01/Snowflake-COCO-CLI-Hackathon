@@ -3,7 +3,7 @@
 """
 Snowflake Client — unified interface for all Snowflake operations.
 
-Connects to Snowflake via st.connection for external deployment (Streamlit Community Cloud).
+Runs natively inside Snowflake using the active Snowpark session.
 Uses AI_COMPLETE for LLM calls and vector search for document Q&A.
 All reads are fully-qualified against the RISK_COMMAND_CENTER database.
 """
@@ -16,8 +16,13 @@ from decimal import Decimal
 
 import streamlit as st
 
+try:
+    from snowflake.snowpark.context import get_active_session
+except Exception:
+    get_active_session = None
+
 DB = "RISK_COMMAND_CENTER"
-LLM_MODEL = "claude-3-5-sonnet"
+LLM_MODEL = "openai-gpt-5"
 
 
 def _coerce(value):
@@ -30,14 +35,17 @@ def _coerce(value):
 
 
 class SnowflakeClient:
-    """Snowflake client using st.connection for external deployment."""
+    """Live Snowflake client backed by the active Snowpark session."""
 
     def __init__(self, session=None):
         if session is not None:
             self._session = session
+        elif get_active_session is not None:
+            self._session = get_active_session()
         else:
-            conn = st.connection("snowflake")
-            self._session = conn.session()
+            raise RuntimeError(
+                "No active Snowpark session. This app must run inside Snowflake."
+            )
 
     # ─── Domain helper ────────────────────────────────────────────────────
 
@@ -75,12 +83,27 @@ class SnowflakeClient:
     def ai_complete(self, prompt: str, model: str = None) -> str:
         """Call AI_COMPLETE with the given prompt. Returns response text or empty string."""
         model = model or LLM_MODEL
-        prompt_esc = prompt.replace("'", "''")
-        sql = f"SELECT AI_COMPLETE('{model}', '{prompt_esc}') AS RESPONSE"
         try:
-            rows = self._session.sql(sql).collect()
-            return rows[0][0] if rows else ""
+            # Use parameter binding to avoid SQL injection and escaping issues
+            rows = self._session.sql(
+                "SELECT SNOWFLAKE.CORTEX.AI_COMPLETE(?, ?) AS RESPONSE",
+                params=[model, prompt[:8000]]
+            ).collect()
+            result = rows[0][0] if rows else ""
+            # Handle case where result is JSON-quoted
+            if result and result.startswith('"') and result.endswith('"'):
+                import json
+                try:
+                    result = json.loads(result)
+                except Exception:
+                    pass
+            return result or ""
         except Exception as e:
+            # Store error for debugging
+            try:
+                self._session.sql(f"INSERT INTO RISK_COMMAND_CENTER.OPS.AI_ERROR_LOG SELECT CURRENT_TIMESTAMP(), '{str(e)[:200]}'").collect()
+            except Exception:
+                pass
             return ""
 
     # ─── Vector Search (Chat with PDFs) ───────────────────────────────────
@@ -550,8 +573,13 @@ ANSWER (cite [Source N] when referencing information):"""
         if structured_context:
             context_parts.append(f"STRUCTURED DATA:\n{structured_context}")
 
-        # 2. Search unstructured document chunks
-        doc_results = self.vector_search(question, top_k=3)
+        # 2. Search unstructured document chunks (only for relevant questions)
+        project_keywords = ["project", "prj", "risk", "invoice", "vendor", "contract",
+                           "change order", "budget", "schedule", "delay", "cost",
+                           "phoenix", "atlas", "steel", "cable", "dispute",
+                           "document", "pdf", "uploaded", "report", "safety"]
+        is_project_question = any(kw in q_lower for kw in project_keywords)
+        doc_results = self.vector_search(question, top_k=3) if is_project_question else []
         if doc_results:
             doc_context = []
             for i, chunk in enumerate(doc_results):
@@ -614,14 +642,28 @@ ANSWER:"""
             # Fallback to smart search
             answer = self._smart_search(question)
 
-        return {"answer": answer, "sources": sources, "chart_data": chart_data}
+        # Only include sources if question was about project data
+        final_sources = sources if is_project_question and sources else []
+        return {"answer": answer, "sources": final_sources, "chart_data": chart_data}
 
     def _get_structured_context(self, question: str) -> str:
         """Get relevant structured data based on question keywords."""
         q_lower = question.lower()
         lines = []
 
-        if any(kw in q_lower for kw in ["contract", "value", "budget", "cost", "financial", "money"]):
+        if any(kw in q_lower for kw in ["risk", "exposure", "critical", "high", "danger", "threat"]):
+            rows = self.query(
+                f"SELECT PROJECT_NAME, RISK_CATEGORY, RISK_TITLE, SEVERITY, "
+                f"TOTAL_FINANCIAL_EXPOSURE FROM {DB}.GOLD.UNIFIED_RISK_MATRIX "
+                f"ORDER BY TOTAL_FINANCIAL_EXPOSURE DESC NULLS LAST LIMIT 10"
+            )
+            for r in rows:
+                lines.append(
+                    f"[{r.get('PROJECT_NAME')}] {r.get('SEVERITY')} {r.get('RISK_CATEGORY')}: "
+                    f"{r.get('RISK_TITLE')} (${r.get('TOTAL_FINANCIAL_EXPOSURE') or 0:,.0f})"
+                )
+
+        elif any(kw in q_lower for kw in ["contract", "value", "budget", "cost", "financial", "money"]):
             rows = self.query(
                 f"SELECT PROJECT_NAME, APPROVED_BUDGET, ACTUAL_COST_TO_DATE, "
                 f"TOTAL_CONTRACT_VALUE, COST_STATUS "
@@ -645,18 +687,6 @@ ANSWER:"""
                     f"Vendor: {r.get('VENDOR_NAME')} ({r.get('TRADE_CATEGORY')}), "
                     f"Grade: {r.get('PERFORMANCE_GRADE')}, Risk Score: {r.get('COMPOSITE_SCORE')}, "
                     f"Value: ${r.get('TOTAL_SUBCONTRACT_VALUE') or 0:,.0f}"
-                )
-
-        elif any(kw in q_lower for kw in ["risk", "exposure", "critical", "high"]):
-            rows = self.query(
-                f"SELECT PROJECT_NAME, RISK_CATEGORY, RISK_TITLE, SEVERITY, "
-                f"TOTAL_FINANCIAL_EXPOSURE FROM {DB}.GOLD.UNIFIED_RISK_MATRIX "
-                f"ORDER BY TOTAL_FINANCIAL_EXPOSURE DESC NULLS LAST LIMIT 10"
-            )
-            for r in rows:
-                lines.append(
-                    f"[{r.get('PROJECT_NAME')}] {r.get('SEVERITY')} {r.get('RISK_CATEGORY')}: "
-                    f"{r.get('RISK_TITLE')} (${r.get('TOTAL_FINANCIAL_EXPOSURE') or 0:,.0f})"
                 )
 
         elif any(kw in q_lower for kw in ["safety", "incident", "injury"]):
@@ -698,11 +728,44 @@ ANSWER:"""
         return "\n".join(lines)
 
     def _smart_search(self, question: str) -> str:
-        """Fallback keyword search when AI_COMPLETE is unavailable."""
+        """Fallback: try a simpler AI call, then keyword search."""
         q_lower = question.lower()
+        
+        # Try a simple direct AI call with minimal context
+        try:
+            structured = self._get_structured_context(question)
+            if structured:
+                simple_prompt = f"Answer concisely using this data:\n{structured[:2000]}\n\nQuestion: {question}\nAnswer:"
+                rows = self._session.sql(
+                    "SELECT SNOWFLAKE.CORTEX.AI_COMPLETE(?, ?) AS R",
+                    params=[LLM_MODEL, simple_prompt]
+                ).collect()
+                if rows and rows[0][0]:
+                    result = rows[0][0]
+                    if result.startswith('"') and result.endswith('"'):
+                        import json
+                        try:
+                            result = json.loads(result)
+                        except Exception:
+                            pass
+                    if result and len(result) > 10:
+                        return result
+        except Exception:
+            pass
 
         # Route by intent
-        if any(kw in q_lower for kw in ["contract", "value", "budget", "cost", "financial"]):
+        if any(kw in q_lower for kw in ["risk", "exposure", "danger", "threat"]):
+            rows = self.get_unified_risk_matrix()
+            if rows:
+                lines = ["**⚠️ Top Risks:**\n"]
+                for r in rows[:5]:
+                    lines.append(
+                        f"• [{r.get('PROJECT_NAME')}] {r.get('SEVERITY')} {r.get('RISK_CATEGORY')}: "
+                        f"{r.get('RISK_TITLE')} (${r.get('TOTAL_FINANCIAL_EXPOSURE') or 0:,.0f})"
+                    )
+                return "\n".join(lines)
+
+        elif any(kw in q_lower for kw in ["contract", "value", "budget", "cost", "financial"]):
             rows = self.get_financial_summary()
             if rows:
                 lines = ["**💰 Financial Summary:**\n"]
@@ -713,7 +776,7 @@ ANSWER:"""
                     )
                 return "\n".join(lines)
 
-        if any(kw in q_lower for kw in ["vendor", "supplier"]):
+        elif any(kw in q_lower for kw in ["vendor", "supplier"]):
             rows = self.query(
                 f"SELECT VENDOR_NAME, PERFORMANCE_GRADE, COMPOSITE_SCORE "
                 f"FROM {DB}.GOLD.VENDOR_SCORECARD ORDER BY COMPOSITE_SCORE DESC LIMIT 5"

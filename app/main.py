@@ -6,19 +6,45 @@ Streamlit entry point with 10 feature tabs, running natively in Snowflake.
 """
 
 import streamlit as st
+from app.config.domain_loader import list_domains, load_domain, set_domain, get_cfg
+
+# ─── Domain bootstrap (before page config so icon is correct) ────────────────
+if "domain_id" not in st.session_state:
+    st.session_state["domain_id"]  = "construction"
+    st.session_state["domain_cfg"] = load_domain("construction")
+_boot_cfg = get_cfg()
 
 # ─── Page Configuration ──────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Enterprise Risk Command Center",
-    page_icon="🏗️",
+    page_title=_boot_cfg.get("page_title", "Enterprise Risk Command Center"),
+    page_icon=_boot_cfg.get("icon", "🏗️"),
     layout="wide",
 )
 
-# ─── Branding (dark theme only) ───────────────────────────────────────────────
-st.sidebar.markdown("### 🏗️ Risk Command Center")
-st.sidebar.caption("Enterprise Unstructured Data Intelligence")
+# ─── Branding — pulled from active domain config ─────────────────────────────
+_cfg = get_cfg()
+st.sidebar.markdown(f"### {_cfg['ui']['app_title']}")
+st.sidebar.caption(_cfg["ui"]["app_subtitle"])
 _dark = True
 st.session_state["plotly_template"] = "plotly_dark"
+
+# ─── Domain Selector ─────────────────────────────────────────────────────────
+_available = list_domains()
+if len(_available) > 1:
+    _domain_labels = {d["id"]: f"{d['icon']} {d['display_name']}" for d in _available}
+    _current_id    = st.session_state.get("domain_id", "construction")
+    _current_idx   = next((i for i, d in enumerate(_available) if d["id"] == _current_id), 0)
+    _selected_id   = st.sidebar.selectbox(
+        "🌐 Domain",
+        options=[d["id"] for d in _available],
+        index=_current_idx,
+        format_func=lambda x: _domain_labels.get(x, x),
+        key="domain_selector",
+    )
+    if _selected_id != _current_id:
+        set_domain(_selected_id)
+        st.rerun()
+    st.sidebar.divider()
 
 
 def _theme_css(dark):
@@ -165,6 +191,30 @@ client = st.session_state.client
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
+
+    # ── Team Credits (compact — just above Pipeline) ───────────────────────
+    st.markdown(
+        """
+<div style="
+  background:linear-gradient(135deg,#1e3a5f 0%,#312e81 100%);
+  border-radius:10px;padding:10px 14px;margin-bottom:4px;
+  border:1px solid rgba(99,102,241,0.25);
+  display:flex;align-items:center;gap:10px;
+">
+  <div style="font-size:1.3rem;flex-shrink:0">⚗️</div>
+  <div>
+    <div style="font-size:.58rem;font-weight:700;color:#a5b4fc;letter-spacing:.1em;
+                text-transform:uppercase;line-height:1">Built with ❤️ by</div>
+    <div style="font-size:.82rem;font-weight:700;color:#e2e8f0;margin:2px 0 1px">
+      Data Alchemists</div>
+    <div style="font-size:.65rem;color:#94a3b8;line-height:1.5">
+      Chirag Lalwani · Pratik Kanade · Abhishek Bhardwaj</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
     st.divider()
 
     # Pipeline controls
@@ -179,9 +229,13 @@ with st.sidebar:
         ]
         for pct, msg in stages:
             progress.progress(pct, text=msg)
-        result = client.run_pipeline()
+        result = client.run_pipeline(domain=st.session_state.get("domain_id", "construction"))
         progress.progress(1.0, text="Pipeline complete!")
-        st.success(result)
+        for line in result.split('\n'):
+            if 'FAILED' in line:
+                st.error(line)
+            else:
+                st.success(line)
 
     if st.button("📊 Pipeline Status", use_container_width=True):
         status = client.get_pipeline_status()
@@ -193,22 +247,102 @@ with st.sidebar:
 
     st.divider()
 
-    # Document corpus overview (read live from Bronze layer)
+    # Document Upload
+    _active_domain = st.session_state.get("domain_id", "construction")
+    _active_cfg    = get_cfg()
+    st.markdown(f"#### 📤 Upload {_active_cfg['entity']['projects']} Documents")
+    st.caption(f"Domain: **{_active_cfg['display_name']}** — uploaded files will be tagged as `{_active_domain}`")
+    uploaded_files = st.file_uploader(
+        "Upload Documents",
+        type=["pdf", "csv", "txt", "xlsx", "log", "eml", "msg", "json", "xml", "doc", "docx"],
+        label_visibility="collapsed",
+        accept_multiple_files=True,
+    )
+    if uploaded_files:
+        st.caption(f"{len(uploaded_files)} file(s) selected")
+        if st.button("📥 Process Upload", use_container_width=True):
+            import uuid
+            success_count = 0
+            for uploaded_file in uploaded_files:
+                file_name = uploaded_file.name
+                file_size = uploaded_file.size
+                file_type = file_name.rsplit(".", 1)[-1] if "." in file_name else "unknown"
+                doc_id = f"DOC-{uuid.uuid4().hex[:16].upper()}"
+                file_path = f"upload/{file_name}"
+
+                with st.spinner(f"Uploading {file_name}..."):
+                    # Upload to internal stage
+                    try:
+                        session = client._session
+                        session.file.put_stream(
+                            uploaded_file,
+                            f"@RISK_COMMAND_CENTER.BRONZE.RAW_INTERNAL_STAGE/{file_path}",
+                            auto_compress=False
+                        )
+                    except Exception:
+                        pass
+
+                    # Register in document registry WITH domain tag
+                    client.execute(f"""
+                        INSERT INTO RISK_COMMAND_CENTER.BRONZE.DOCUMENT_REGISTRY
+                        (DOCUMENT_ID, FILE_NAME, FILE_PATH, FILE_SIZE, FILE_TYPE, STATUS, UPLOADED_AT, DOMAIN)
+                        VALUES ('{doc_id}', '{file_name}', '{file_path}', {file_size}, '{file_type}',
+                                'UPLOADED', CURRENT_TIMESTAMP(), '{_active_domain}')
+                    """)
+                    success_count += 1
+
+            st.success(f"✅ {success_count} file(s) registered as **{_active_domain}**. Click **Run Full Pipeline** to process.")
+
+    st.divider()
+
+    # Document corpus overview
     st.markdown("#### 📁 Document Corpus")
     docs = client.get_document_registry(limit=500)
     if docs:
-        st.metric("Registered Documents", len(docs))
-        types = {}
+        # Domain summary counts
+        domain_counts = {}
         for d in docs:
-            t = (d.get("FILE_TYPE") or "other").upper()
-            types[t] = types.get(t, 0) + 1
-        st.caption(" | ".join(f"{k}: {v}" for k, v in sorted(types.items())))
-    else:
-        st.caption("No documents registered yet.")
+            dm = (d.get("DOMAIN") or "construction").lower()
+            domain_counts[dm] = domain_counts.get(dm, 0) + 1
+        total = len(docs)
+        this_domain = domain_counts.get(_active_domain, 0)
 
-    st.divider()
-    st.caption("Powered by Snowflake Cortex AI")
-    st.caption("Running natively in Snowflake")
+        # KPI row
+        k1, k2 = st.columns(2)
+        k1.metric("This Domain", f"{this_domain}")
+        k2.metric("Total", f"{total}")
+
+        # Domain breakdown chips
+        chips = " &nbsp; ".join(
+            f'<span style="background:#1e3a5f;color:#7dd3fc;padding:2px 8px;'
+            f'border-radius:6px;font-size:.65rem;font-weight:600">'
+            f'{k}: {v}</span>'
+            for k, v in sorted(domain_counts.items())
+        )
+        st.markdown(chips, unsafe_allow_html=True)
+        st.markdown("")  # small spacer
+
+        # Document list — show name, type, status for this domain
+        domain_docs = [d for d in docs
+                       if (d.get("DOMAIN") or "construction").lower() == _active_domain]
+        if domain_docs:
+            import pandas as pd
+            df_docs = pd.DataFrame(domain_docs[:20])
+            status_map = {
+                "PARSED": "✅", "PROCESSED": "✅", "SUCCESS": "✅",
+                "UPLOADED": "⏳", "FAILED": "❌", "UNSUPPORTED": "⚠️",
+            }
+            df_show = pd.DataFrame({
+                "📄 Document": [d.get("FILE_NAME", "")[:30] for d in domain_docs[:20]],
+                "Type": [str(d.get("FILE_TYPE", "")).upper()[:6] for d in domain_docs[:20]],
+                "Status": [status_map.get(str(d.get("STATUS", "")).upper(), "❓")
+                           for d in domain_docs[:20]],
+            })
+            st.dataframe(df_show, use_container_width=True, hide_index=True,
+                         height=min(35 * len(df_show) + 38, 280))
+    else:
+        st.caption("No documents yet — upload files above.")
+
 
 # ─── Main Header ─────────────────────────────────────────────────────────────
 st.markdown('<p class="main-header">🏗️ Enterprise Risk Command Center</p>', unsafe_allow_html=True)
