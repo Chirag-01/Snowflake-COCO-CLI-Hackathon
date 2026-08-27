@@ -470,6 +470,195 @@ def extract_graph(session):
 
     return f"Graph extraction complete: {nodes} nodes, {edges} edges."
 ';
+CREATE OR REPLACE PROCEDURE RISK_COMMAND_CENTER.OPS.SP_EXTRACT_IMAGES_FROM_DOCS("DOMAIN" VARCHAR DEFAULT 'construction')
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+ARTIFACT_REPOSITORY = snowflake.snowpark.pypi_shared_repository
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'extract_images'
+EXECUTE AS OWNER
+AS '
+def extract_images(session, domain=''construction''):
+    import re, json
+
+    MODEL = ''claude-sonnet-4-6''
+    
+    VISION_PROMPT = (
+        "Extract the top 5 most important structured data tables and visual elements from this document. "
+        "Return a JSON array. Each item: type, title, data_points array (max 20 points each), key_insights. "
+        "Keep response concise. {0}"
+    )
+
+    docs = session.sql(f"""
+        SELECT dr.DOCUMENT_ID, dr.FILE_PATH, dr.FILE_NAME
+        FROM RISK_COMMAND_CENTER.BRONZE.DOCUMENT_REGISTRY dr
+        WHERE dr.STATUS = ''PARSED''
+          AND COALESCE(dr.DOMAIN, ''construction'') = ''{domain}''
+          AND NOT EXISTS (
+              SELECT 1 FROM RISK_COMMAND_CENTER.SILVER.CHUNKS c
+              WHERE c.DOCUMENT_ID = dr.DOCUMENT_ID
+                AND STARTSWITH(c.CHUNK_TEXT, ''[IMAGE_ANALYSIS]'')
+          )
+    """).collect()
+    
+    if not docs:
+        return "No documents pending deep extraction."
+    
+    processed = 0
+    chunks_added = 0
+    skipped = 0
+    
+    for doc in docs:
+        doc_id = doc[''DOCUMENT_ID'']
+        file_path = doc[''FILE_PATH'']
+        file_name = doc[''FILE_NAME'']
+        
+        try:
+            prompt_esc = VISION_PROMPT.replace("''", "''''")
+            file_path_esc = file_path.replace("''", "''''")
+            
+            result_rows = session.sql(f"""
+                SELECT AI_COMPLETE(
+                    MODEL => ''{MODEL}'',
+                    PROMPT => PROMPT(
+                        ''{prompt_esc}'',
+                        TO_FILE(''@RISK_COMMAND_CENTER.BRONZE.RAW_INTERNAL_STAGE'', ''{file_path_esc}'')
+                    )
+                ) AS RESP
+            """).collect()
+            
+            if not result_rows or not result_rows[0][''RESP'']:
+                skipped += 1
+                continue
+            
+            resp_str = str(result_rows[0][''RESP''])
+            
+            # Strip outer JSON quotes
+            if resp_str.startswith(''"'') and resp_str.endswith(''"''):
+                try:
+                    resp_str = json.loads(resp_str)
+                    resp_str = str(resp_str)
+                except Exception:
+                    pass
+            
+            if resp_str.strip() == ''[]'':
+                skipped += 1
+                continue
+            
+            # Remove code fences
+            clean = resp_str
+            if ''```json'' in clean:
+                clean = clean.split(''```json'', 1)[1].split(''```'', 1)[0]
+            elif ''```'' in clean:
+                parts = clean.split(''```'')
+                if len(parts) >= 3:
+                    clean = parts[1]
+            
+            # Lenient JSON parsing - try progressively smaller chunks
+            image_data = []
+            try:
+                arr_match = re.search(r''\\[[\\s\\S]+\\]'', clean)
+                if arr_match:
+                    json_str = arr_match.group(0)
+                    try:
+                        image_data = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # Try to fix common issues: truncated JSON
+                        # Find last complete object by looking for last "},"
+                        last_complete = json_str.rfind(''},'')
+                        if last_complete > 0:
+                            fixed = json_str[:last_complete+1] + '']''
+                            try:
+                                image_data = json.loads(fixed)
+                            except Exception:
+                                pass
+                        # Try finding last "}" before the truncation
+                        if not image_data:
+                            last_brace = json_str.rfind(''}'')
+                            if last_brace > 0:
+                                fixed = json_str[:last_brace+1] + '']''
+                                try:
+                                    image_data = json.loads(fixed)
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+            
+            if not image_data or not isinstance(image_data, list):
+                skipped += 1
+                continue
+            
+            # Get next chunk index
+            max_idx_rows = session.sql(f"""
+                SELECT COALESCE(MAX(CHUNK_INDEX), 0) + 1 AS NEXT_IDX
+                FROM RISK_COMMAND_CENTER.SILVER.CHUNKS WHERE DOCUMENT_ID = ''{doc_id}''
+            """).collect()
+            next_idx = max_idx_rows[0][''NEXT_IDX''] if max_idx_rows else 100
+            
+            for i, img in enumerate(image_data):
+                if not isinstance(img, dict):
+                    continue
+                
+                img_type = str(img.get(''type'', img.get(''visual_type'', ''data'')))
+                img_title = str(img.get(''title'', ''Extracted Data''))
+                img_desc = str(img.get(''description'', ''''))
+                data_points = img.get(''data_points'', img.get(''data'', []))
+                key_insights = img.get(''key_insights'', '''')
+                if isinstance(key_insights, list):
+                    key_insights = "; ".join(str(k) for k in key_insights)
+                key_insights = str(key_insights)
+                
+                data_text = ""
+                if data_points and isinstance(data_points, list):
+                    for dp in data_points[:30]:
+                        if isinstance(dp, dict):
+                            parts = [f"{k}: {v}" for k, v in dp.items() if v is not None]
+                            data_text += "  - " + ", ".join(parts) + "\\n"
+                        elif isinstance(dp, str):
+                            data_text += f"  - {dp}\\n"
+                
+                if not data_text and not img_desc:
+                    continue
+                
+                chunk_text = (
+                    f"[IMAGE_ANALYSIS] {img_type.upper()}: {img_title}\\n\\n"
+                    f"Description: {img_desc}\\n\\n"
+                    f"Data Points:\\n{data_text}\\n"
+                    f"Key Insights: {key_insights}\\n\\n"
+                    f"Source: {file_name}"
+                )[:8000]
+                
+                chunk_id = f"CHK-IMG-{doc_id[-8:]}-{i:02d}"
+                chunk_text_esc = chunk_text.replace("''", "''''")
+                
+                session.sql(f"""
+                    INSERT INTO RISK_COMMAND_CENTER.SILVER.CHUNKS 
+                    (CHUNK_ID, DOCUMENT_ID, CHUNK_INDEX, CHUNK_TEXT, PAGE_NUMBER, DOMAIN)
+                    SELECT ''{chunk_id}'', ''{doc_id}'', {next_idx + i},
+                           ''{chunk_text_esc}'', NULL, ''{domain}''
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM RISK_COMMAND_CENTER.SILVER.CHUNKS WHERE CHUNK_ID = ''{chunk_id}''
+                    )
+                """).collect()
+                chunks_added += 1
+            
+            processed += 1
+            
+        except Exception as e:
+            try:
+                err_msg = str(e)[:300].replace("''", "''''")
+                session.sql(f"""
+                    INSERT INTO RISK_COMMAND_CENTER.OPS.AI_ERROR_LOG (ERROR_MSG)
+                    VALUES (''IMG [{doc_id}]: {err_msg}'')
+                """).collect()
+            except Exception:
+                pass
+            skipped += 1
+            continue
+    
+    return f"Deep extraction: {processed} docs processed, {chunks_added} chunks added, {skipped} skipped."
+';
 CREATE OR REPLACE PROCEDURE RISK_COMMAND_CENTER.OPS.SP_EXTRACT_STRUCTURED_DATA("DOMAIN" VARCHAR DEFAULT 'construction')
 RETURNS VARCHAR
 LANGUAGE PYTHON
@@ -1726,10 +1915,18 @@ def run_full_pipeline(session, domain=''construction''):
     except Exception as e:
         results.append(f"Stage 1 (Parse): FAILED - {str(e)[:120]}")
 
+    # Stage 1b — Image/Chart extraction (vision)
+    try:
+        r = session.sql(f"CALL RISK_COMMAND_CENTER.OPS.SP_EXTRACT_IMAGES_FROM_DOCS(''{domain}'')").collect()
+        msg = r[0][0] if r else ''OK''
+        results.append(f"Stage 1b (Image Extract): {msg}")
+    except Exception as e:
+        results.append(f"Stage 1b (Image Extract): FAILED - {str(e)[:120]}")
+
     # Stage 2 — Knowledge graph
     try:
         r = session.sql("CALL RISK_COMMAND_CENTER.OPS.SP_EXTRACT_GRAPH()").collect()
-        msg   = r[0][0] if r else ''OK''
+        msg = r[0][0] if r else ''OK''
         nodes = count(''RISK_COMMAND_CENTER.SILVER.GRAPH_NODES'')
         results.append(f"Stage 2 (Graph): {msg} | Nodes: {nodes}")
     except Exception as e:
@@ -1738,32 +1935,32 @@ def run_full_pipeline(session, domain=''construction''):
     # Stage 3 — Vector embeddings
     try:
         r = session.sql("CALL RISK_COMMAND_CENTER.OPS.SP_GENERATE_VECTORS()").collect()
-        msg  = r[0][0] if r else ''OK''
+        msg = r[0][0] if r else ''OK''
         vecs = count(''RISK_COMMAND_CENTER.SILVER.VECTORS'')
         results.append(f"Stage 3 (Vectors): {msg} | Vectors: {vecs}")
     except Exception as e:
         results.append(f"Stage 3 (Vectors): FAILED - {str(e)[:120]}")
 
-    # Stage 4 — Structured extraction (domain-aware, self-healing project_id)
+    # Stage 4 — Structured extraction (domain-aware)
     try:
         r = session.sql(f"CALL RISK_COMMAND_CENTER.OPS.SP_EXTRACT_STRUCTURED_DATA(''{domain}'')").collect()
-        msg    = r[0][0] if r else ''OK''
-        risks  = count(''RISK_COMMAND_CENTER.SILVER.RISK_EVENTS'')
+        msg = r[0][0] if r else ''OK''
+        risks = count(''RISK_COMMAND_CENTER.SILVER.RISK_EVENTS'')
         results.append(f"Stage 4 (Structure/{domain}): {msg} | Risk Events: {risks}")
     except Exception as e:
         results.append(f"Stage 4 (Structure): FAILED - {str(e)[:120]}")
 
-    # Stage 5 — Silver enrichment (vendors from CSV + percent_complete from chunks)
+    # Stage 5 — Silver enrichment
     try:
         r = session.sql("CALL RISK_COMMAND_CENTER.OPS.SP_POPULATE_SILVER_FROM_GRAPH()").collect()
-        msg      = r[0][0] if r else ''OK''
-        vendors  = count(''RISK_COMMAND_CENTER.SILVER.VENDORS'')
+        msg = r[0][0] if r else ''OK''
+        vendors = count(''RISK_COMMAND_CENTER.SILVER.VENDORS'')
         projects = count(''RISK_COMMAND_CENTER.SILVER.PROJECTS'')
         results.append(f"Stage 5 (Enrich): {msg} | Projects: {projects}, Vendors: {vendors}")
     except Exception as e:
         results.append(f"Stage 5 (Enrich): FAILED - {str(e)[:120]}")
 
-    # Stage 6 — Gold refresh (cleanup + domain-filtered aggregation)
+    # Stage 6 — Gold refresh
     try:
         r = session.sql(f"CALL RISK_COMMAND_CENTER.OPS.SP_REFRESH_GOLD(''{domain}'')").collect()
         msg = r[0][0] if r else ''OK''
@@ -1792,6 +1989,115 @@ def test_ai(session):
         return f"SUCCESS: {result}"
     except Exception as e:
         return f"ERROR: {str(e)}"
+';
+CREATE OR REPLACE PROCEDURE RISK_COMMAND_CENTER.OPS.SP_TEST_IMAGE_EXTRACT()
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+ARTIFACT_REPOSITORY = snowflake.snowpark.pypi_shared_repository
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'test'
+EXECUTE AS OWNER
+AS '
+def test(session):
+    import json
+    
+    file_path = ''upload/01_Construction_Project_Status_Report.pdf''
+    prompt = "Extract all structured data tables and visual elements from this document as a JSON array. Each item needs type, title, data_points array, and key_insights. Be thorough. {0}"
+    prompt_esc = prompt.replace("''", "''''")
+    
+    sql = f"""
+        SELECT AI_COMPLETE(
+            MODEL => ''claude-sonnet-4-6'',
+            PROMPT => PROMPT(
+                ''{prompt_esc}'',
+                TO_FILE(''@RISK_COMMAND_CENTER.BRONZE.RAW_INTERNAL_STAGE'', ''{file_path}'')
+            )
+        ) AS RESP
+    """
+    
+    try:
+        result_rows = session.sql(sql).collect()
+        if not result_rows:
+            return "NO ROWS RETURNED"
+        resp = result_rows[0][''RESP'']
+        if resp is None:
+            return "RESP IS NONE"
+        return f"SUCCESS: type={type(resp).__name__}, len={len(str(resp))}, first100={str(resp)[:100]}"
+    except Exception as e:
+        return f"ERROR: {str(e)[:500]}"
+';
+CREATE OR REPLACE PROCEDURE RISK_COMMAND_CENTER.OPS.SP_TEST_IMAGE_EXTRACT2()
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+ARTIFACT_REPOSITORY = snowflake.snowpark.pypi_shared_repository
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'test'
+EXECUTE AS OWNER
+AS '
+def test(session):
+    import json, re
+    
+    file_path = ''upload/01_Construction_Project_Status_Report.pdf''
+    prompt = "Extract all structured data tables and visual elements from this document as a JSON array. Each item needs type, title, data_points array, and key_insights. Be thorough. {0}"
+    prompt_esc = prompt.replace("''", "''''")
+    
+    result_rows = session.sql(f"""
+        SELECT AI_COMPLETE(
+            MODEL => ''claude-sonnet-4-6'',
+            PROMPT => PROMPT(
+                ''{prompt_esc}'',
+                TO_FILE(''@RISK_COMMAND_CENTER.BRONZE.RAW_INTERNAL_STAGE'', ''{file_path}'')
+            )
+        ) AS RESP
+    """).collect()
+    
+    resp_str = str(result_rows[0][''RESP''])
+    trace = [f"1. raw type={type(result_rows[0][''RESP'']).__name__}, starts_with_quote={resp_str[:1]}"]
+    
+    # Strip outer quotes
+    if resp_str.startswith(''"'') and resp_str.endswith(''"''):
+        try:
+            resp_str = json.loads(resp_str)
+            resp_str = str(resp_str)
+            trace.append(f"2. unquoted, len={len(resp_str)}")
+        except Exception as e:
+            trace.append(f"2. unquote FAILED: {e}")
+    
+    if resp_str.strip() == ''[]'':
+        return " | ".join(trace) + " | EMPTY ARRAY"
+    
+    # Remove code fences
+    clean = resp_str
+    if ''```json'' in clean:
+        clean = clean.split(''```json'', 1)[1].split(''```'', 1)[0]
+        trace.append(f"3. fences removed, len={len(clean)}")
+    elif ''```'' in clean:
+        parts = clean.split(''```'')
+        if len(parts) >= 3:
+            clean = parts[1]
+        trace.append(f"3. generic fences, len={len(clean)}")
+    else:
+        trace.append("3. no fences found")
+    
+    # Parse JSON
+    image_data = []
+    try:
+        arr_match = re.search(r''\\[[\\s\\S]+\\]'', clean)
+        if arr_match:
+            parsed = json.loads(arr_match.group(0))
+            if isinstance(parsed, list):
+                image_data = parsed
+                trace.append(f"4. parsed {len(image_data)} items")
+            else:
+                trace.append(f"4. not a list: {type(parsed)}")
+        else:
+            trace.append(f"4. no array match, clean[:50]={clean[:50]}")
+    except Exception as e:
+        trace.append(f"4. parse error: {str(e)[:100]}")
+    
+    return " | ".join(trace)
 ';
 create or replace task RISK_COMMAND_CENTER.OPS.TASK_AUTO_PROCESS_DOCS
 	warehouse=COMPUTE_WH
